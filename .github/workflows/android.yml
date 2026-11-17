@@ -24,6 +24,11 @@ jobs:
       - uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: '8.9'
+      - name: Test log parser
+        run: |
+          mkdir -p build/parser-test
+          javac -d build/parser-test app/src/main/java/online/vaultx/playeridhelper/GameLogParser.java tests/GameLogParserTest.java
+          java -cp build/parser-test online.vaultx.playeridhelper.GameLogParserTest
       - name: Build debug APK
         run: gradle --no-daemon assembleDebug
       - name: Verify APK
@@ -41,10 +46,10 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           cp app/build/outputs/apk/debug/app-debug.apk CaseOpenerPleerID.apk
-          if gh release view v0.1.0 >/dev/null 2>&1; then
-            gh release upload v0.1.0 CaseOpenerPleerID.apk --clobber
+          if gh release view v0.2.0 >/dev/null 2>&1; then
+            gh release upload v0.2.0 CaseOpenerPleerID.apk --clobber
           else
-            gh release create v0.1.0 CaseOpenerPleerID.apk \
-              --title "CaseOpenerPleerID 0.1.0" \
-              --notes "Android-приложение-помощник VaultX Player ID. Отдельный пакет, не заменяет оригинальную игру. Debug APK для тестирования."
+            gh release create v0.2.0 CaseOpenerPleerID.apk \
+              --title "CaseOpenerPleerID 0.2.0 — Log Scanner" \
+              --notes "Экспериментальный поиск Player ID из Android logcat. Требуется ADB READ_LOGS; ID должен присутствовать в журнале игры. APK устанавливается отдельно и не изменяет оригинальную игру."
           fi
