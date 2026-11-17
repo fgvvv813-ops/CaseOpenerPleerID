@@ -14,6 +14,7 @@ import android.os.Build;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
+import android.provider.Settings;
 import android.view.View;
 import android.widget.Button;
 import android.widget.LinearLayout;
@@ -25,13 +26,15 @@ import java.text.SimpleDateFormat;
 import java.util.Date;
 import java.util.Locale;
 
-/** A local, privacy-aware logcat Player ID finder. No manual ID input. */
+/**
+ * Standalone Player ID finder. Default route: Android's own bugreport UI
+ * and offline ZIP/TXT scan. Optional legacy live-log mode requires READ_LOGS.
+ */
 public final class MainActivity extends Activity {
+    private static final int PICK_REPORT = 1307;
     private static final String ADB_COMMAND =
             "adb shell pm grant online.vaultx.playeridhelper android.permission.READ_LOGS";
-    private TextView permissionLabel;
-    private TextView statusLabel;
-    private TextView idLabel;
+    private TextView statusLabel, idLabel, permissionLabel;
     private final Handler handler = new Handler(Looper.getMainLooper());
     private final Runnable ticker = new Runnable() {
         @Override public void run() {
@@ -39,150 +42,199 @@ public final class MainActivity extends Activity {
             handler.postDelayed(this, 1000);
         }
     };
+    private volatile boolean reportBusy;
 
     private SharedPreferences prefs() {
         return getSharedPreferences("finder", Context.MODE_PRIVATE);
     }
-
-    private TextView text(LinearLayout parent, String content, int size, int color) {
+    private int dp(int n) {
+        return (int) (n * getResources().getDisplayMetrics().density + 0.5f);
+    }
+    private TextView text(LinearLayout root, String content, int size, int color) {
         TextView t = new TextView(this);
         t.setText(content);
         t.setTextColor(color);
         t.setTextSize(size);
-        t.setPadding(0, dp(10), 0, dp(7));
-        parent.addView(t);
+        t.setPadding(0, dp(10), 0, dp(9));
+        root.addView(t);
         return t;
     }
-
-    private int dp(int n) {
-        return (int) (n * getResources().getDisplayMetrics().density + 0.5f);
-    }
-
-    private void button(LinearLayout root, String title, View.OnClickListener click) {
+    private void button(LinearLayout root, String title, View.OnClickListener onClick) {
         Button b = new Button(this);
         b.setText(title);
+        b.setTextSize(16);
         b.setAllCaps(false);
-        b.setOnClickListener(click);
+        b.setOnClickListener(onClick);
         root.addView(b);
     }
-
     private boolean canReadLogs() {
-        return Build.VERSION.SDK_INT >= 23
-                && checkSelfPermission(Manifest.permission.READ_LOGS)
+        return checkSelfPermission(Manifest.permission.READ_LOGS)
                 == PackageManager.PERMISSION_GRANTED;
     }
-
-    private void copy(String value, String toast) {
-        ClipboardManager c = (ClipboardManager) getSystemService(Context.CLIPBOARD_SERVICE);
-        c.setPrimaryClip(ClipData.newPlainText("CaseOpener Player ID", value));
-        Toast.makeText(this, toast, Toast.LENGTH_SHORT).show();
+    private void copy(String value) {
+        ClipboardManager manager =
+                (ClipboardManager) getSystemService(Context.CLIPBOARD_SERVICE);
+        manager.setPrimaryClip(ClipData.newPlainText("Player ID", value));
+        Toast.makeText(this, "Скопировано", Toast.LENGTH_SHORT).show();
     }
-
     private void refreshUi() {
-        boolean granted = canReadLogs();
-        permissionLabel.setText(granted
-            ? "✅ Разрешение на чтение журналов выдано"
-            : "🔒 Android не разрешает читать журналы других приложений без настройки ADB");
-        statusLabel.setText("Состояние: " + prefs().getString("status", "Поиск ещё не запускался"));
+        if (statusLabel == null) return;
+        statusLabel.setText(prefs().getString("status",
+                "Нажми «Открыть игру», затем создай отчёт Android."));
         String found = prefs().getString("candidate", "");
-        long at = prefs().getLong("foundAt", 0);
+        long time = prefs().getLong("foundAt", 0);
         if (found.isEmpty()) {
-            idLabel.setText("Player ID пока не найден");
+            idLabel.setText("🔍 Player ID ещё не найден");
         } else {
-            String when = at > 0
-                ? new SimpleDateFormat("dd.MM.yyyy HH:mm", Locale.getDefault()).format(new Date(at))
-                : "";
-            idLabel.setText("Возможный Player ID:\n" + found + "\nНайден: " + when);
+            String when = time > 0 ?
+                    new SimpleDateFormat("dd.MM.yyyy HH:mm", Locale.getDefault())
+                            .format(new Date(time)) : "";
+            idLabel.setText("Возможный Player ID:\n" + found
+                    + "\n\n" + when + "\nНе забудь подтвердить ID через VaultX.");
         }
+        permissionLabel.setText(canReadLogs()
+                ? "Дополнительный поиск в реальном времени доступен"
+                : "Поиск в реальном времени недоступен без расширенного разрешения."
+                        + " Основной поиск через отчёт Android работает без ADB.");
     }
-
-    private Intent getGameIntent() {
-        return getPackageManager().getLaunchIntentForPackage(GameLogScannerService.GAME_PACKAGE);
-    }
-
-    private void beginScanAndLaunch() {
-        Intent game = getGameIntent();
+    private void startGame() {
+        Intent game = getPackageManager().getLaunchIntentForPackage(
+                GameLogScannerService.GAME_PACKAGE);
         if (game == null) {
-            Toast.makeText(this, "Оригинальный Case Opener не найден на устройстве",
+            Toast.makeText(this, "Оригинальная игра не найдена на устройстве",
                     Toast.LENGTH_LONG).show();
             return;
         }
-        if (!canReadLogs()) {
-            Toast.makeText(this, "Сначала выдайте READ_LOGS через ADB",
-                    Toast.LENGTH_LONG).show();
-            refreshUi();
-            return;
-        }
-        Intent scan = new Intent(this, GameLogScannerService.class);
-        if (Build.VERSION.SDK_INT >= 26) startForegroundService(scan);
-        else startService(scan);
         startActivity(game);
     }
-
+    private void openDeveloperSettings() {
+        try {
+            startActivity(new Intent(Settings.ACTION_APPLICATION_DEVELOPMENT_SETTINGS));
+        } catch (Exception e) {
+            startActivity(new Intent(Settings.ACTION_SETTINGS));
+        }
+    }
+    private void pickReport() {
+        if (reportBusy) return;
+        Intent pick = new Intent(Intent.ACTION_OPEN_DOCUMENT);
+        pick.setType("*/*");
+        pick.addCategory(Intent.CATEGORY_OPENABLE);
+        pick.putExtra(Intent.EXTRA_MIME_TYPES,
+                new String[]{"application/zip", "application/x-zip-compressed",
+                        "text/plain", "application/octet-stream"});
+        try {
+            startActivityForResult(pick, PICK_REPORT);
+        } catch (Exception e) {
+            Toast.makeText(this, "Не удалось открыть системный выбор файла",
+                    Toast.LENGTH_LONG).show();
+        }
+    }
+    private void scanReport(Uri uri) {
+        if (uri == null || reportBusy) return;
+        reportBusy = true;
+        prefs().edit().putString("candidate", "").putLong("foundAt", 0)
+                .putString("status", "🔎 Проверяю выбранный отчёт на Player ID…").apply();
+        refreshUi();
+        new Thread(() -> {
+            BugReportScanner.Result result = BugReportScanner.read(getContentResolver(), uri);
+            handler.post(() -> {
+                SharedPreferences.Editor editor = prefs().edit()
+                        .putString("status", result.message);
+                if (result.candidate != null) {
+                    editor.putString("candidate", result.candidate)
+                            .putLong("foundAt", System.currentTimeMillis());
+                }
+                editor.apply();
+                reportBusy = false;
+                refreshUi();
+            });
+        }, "BugReport-PlayerId-Scanner").start();
+    }
+    private void handleShare(Intent intent) {
+        if (intent != null && Intent.ACTION_SEND.equals(intent.getAction())) {
+            Uri source = null;
+            try {
+                source = intent.getParcelableExtra(Intent.EXTRA_STREAM);
+            } catch (Exception ignored) {}
+            if (source != null) scanReport(source);
+        }
+    }
     @Override public void onCreate(Bundle state) {
         super.onCreate(state);
         ScrollView scroll = new ScrollView(this);
         LinearLayout root = new LinearLayout(this);
         root.setOrientation(LinearLayout.VERTICAL);
+        root.setPadding(dp(18), dp(16), dp(18), dp(28));
         root.setBackgroundColor(Color.WHITE);
-        root.setPadding(dp(18), dp(20), dp(18), dp(24));
         scroll.addView(root);
-
-        text(root, "🔎 CaseOpener Player ID", 25, Color.rgb(36, 30, 78));
-        text(root, "Автоматический поиск ID по журналу оригинальной игры. "
-                + "Никакого ручного ввода ID. Игра и её сохранения не изменяются.",
+        text(root, "🔎 CaseOpener Player ID", 25, Color.rgb(40, 32, 85));
+        text(root, "Поиск настоящего Player ID по диагностическим сообщениям игры. "
+                + "Приложение не изменяет Case Opener и не требует ввода ID вручную.",
                 16, Color.DKGRAY);
-
-        permissionLabel = text(root, "", 15, Color.rgb(100, 68, 12));
+        idLabel = text(root, "🔍 Player ID ещё не найден", 19, Color.rgb(10, 90, 55));
         statusLabel = text(root, "", 15, Color.DKGRAY);
-        idLabel = text(root, "", 19, Color.rgb(32, 80, 67));
-
-        button(root, "▶ Начать поиск и открыть Case Opener", v -> beginScanAndLaunch());
         button(root, "📋 Скопировать найденный Player ID", v -> {
-            String value = prefs().getString("candidate", "");
-            if (value.isEmpty()) {
-                Toast.makeText(this, "Player ID ещё не обнаружен", Toast.LENGTH_SHORT).show();
+            String id = prefs().getString("candidate", "");
+            if (id.isEmpty()) {
+                Toast.makeText(this, "Сначала нужно найти ID", Toast.LENGTH_SHORT).show();
+            } else copy(id);
+        });
+        text(root, "Без ПК и ADB (основной способ)", 19, Color.rgb(42, 35, 88));
+        text(root, "1. Открой оригинальную игру и зайди в профиль.\n"
+                + "2. В настройках Android открой «Для разработчиков» → «Создать отчёт об ошибках» "
+                + "(полный отчёт).\n"
+                + "3. Когда отчёт будет готов, поделись ZIP с нашим приложением или выбери его здесь. "
+                + "Мы найдём первый подходящий Player ID и покажем его.",
+                15, Color.DKGRAY);
+        button(root, "🎮 1. Открыть Case Opener", v -> startGame());
+        button(root, "⚙️ 2. Открыть настройки разработчика", v -> openDeveloperSettings());
+        button(root, "📂 3. Найти Player ID в отчёте ZIP/TXT", v -> pickReport());
+        text(root, "Дополнительный поиск (если разрешён доступ к логам)", 17, Color.BLACK);
+        permissionLabel = text(root, "", 14, Color.DKGRAY);
+        button(root, "▶ Запустить поиск в реальном времени", v -> {
+            if (!canReadLogs()) {
+                Toast.makeText(this, "Для прямого чтения чужих логов Android требует особое разрешение. "
+                                + "Используй поиск по отчёту выше.", Toast.LENGTH_LONG).show();
                 return;
             }
-            copy(value, "Player ID скопирован");
+            Intent scan = new Intent(this, GameLogScannerService.class);
+            if (Build.VERSION.SDK_INT >= 26) startForegroundService(scan);
+            else startService(scan);
+            startGame();
         });
-        button(root, "⏹ Остановить поиск", v -> {
+        button(root, "⏹ Остановить прямой поиск", v -> {
             Intent stop = new Intent(this, GameLogScannerService.class);
             stop.setAction(GameLogScannerService.ACTION_STOP);
             startService(stop);
-            refreshUi();
         });
-        button(root, "💬 Перейти в бот VaultX", v -> startActivity(
-                new Intent(Intent.ACTION_VIEW, Uri.parse("https://t.me/VaultX_co_BOT?start=playerid"))
-        ));
-
-        text(root, "Первоначальная настройка доступа", 19, Color.BLACK);
-        text(root, "1. Включите «Для разработчиков» и «Отладка по USB» на своём Android.\n"
-                + "2. Подключите телефон к своему компьютеру с ADB.\n"
-                + "3. Выполните команду ниже один раз. На Android 13+ также "
-                + "подтверждайте системный запрос доступа к журналам.\n"
-                + "4. Нажмите «Начать поиск», игра откроется автоматически. "
-                + "Поиграйте немного и вернитесь сюда за результатом.",
-                15, Color.DKGRAY);
-        text(root, ADB_COMMAND, 13, Color.rgb(63, 65, 131));
-        button(root, "📋 Скопировать команду ADB", v ->
-                copy(ADB_COMMAND, "Команда скопирована"));
-
-        text(root, "Важно: если сама игра не записывает Player ID в журнал, "
-                + "Android не позволит получить его таким способом. "
-                + "Найденное совпадение является предварительным и должно "
-                + "проверяться через VaultX. Никакие логи не отправляются в интернет.",
-                14, Color.DKGRAY);
+        button(root, "💜 Перейти в Telegram-бот VaultX", v -> {
+            startActivity(new Intent(Intent.ACTION_VIEW,
+                    Uri.parse("https://t.me/VaultX_co_BOT?start=playerid")));
+        });
+        text(root, "Важно: Android не разрешает обычному приложению автоматически "
+                + "считывать закрытые логи другой игры. Отчёт создаётся самим Android по "
+                + "действию пользователя. Если Case Opener не пишет Player ID в журнал, "
+                + "найти его по логам нельзя. Отчёты не отправляются на сервер.",
+                13, Color.DKGRAY);
         setContentView(scroll);
         refreshUi();
+        handleShare(getIntent());
     }
-
+    @Override protected void onActivityResult(int requestCode, int resultCode, Intent data) {
+        super.onActivityResult(requestCode, resultCode, data);
+        if (requestCode == PICK_REPORT && resultCode == RESULT_OK && data != null)
+            scanReport(data.getData());
+    }
+    @Override protected void onNewIntent(Intent intent) {
+        super.onNewIntent(intent);
+        setIntent(intent);
+        handleShare(intent);
+    }
     @Override protected void onResume() {
         super.onResume();
         handler.removeCallbacks(ticker);
         handler.post(ticker);
     }
-
     @Override protected void onPause() {
         handler.removeCallbacks(ticker);
         super.onPause();
