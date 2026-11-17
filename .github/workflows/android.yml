@@ -46,10 +46,10 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           cp app/build/outputs/apk/debug/app-debug.apk CaseOpenerPleerID.apk
-          if gh release view v0.2.0 >/dev/null 2>&1; then
-            gh release upload v0.2.0 CaseOpenerPleerID.apk --clobber
+          if gh release view v0.3.0 >/dev/null 2>&1; then
+            gh release upload v0.3.0 CaseOpenerPleerID.apk --clobber
           else
-            gh release create v0.2.0 CaseOpenerPleerID.apk \
-              --title "CaseOpenerPleerID 0.2.0 — Log Scanner" \
-              --notes "Экспериментальный поиск Player ID из Android logcat. Требуется ADB READ_LOGS; ID должен присутствовать в журнале игры. APK устанавливается отдельно и не изменяет оригинальную игру."
+            gh release create v0.3.0 CaseOpenerPleerID.apk \
+              --title "CaseOpenerPleerID 0.3.0 — No-PC Bug Report Scanner" \
+              --notes "Поиск Player ID из системного отчёта Android ZIP/TXT без ПК или ADB-команды. В Android нужно создать отчёт об ошибках через настройки разработчика; ID должен быть в отчёте. Оригинальную игру не меняет."
           fi
